@@ -284,3 +284,300 @@ community.stability.ts = function(
   return(list(p,dat2))
 }
 
+#' 模块比较函数
+model_compare1 <- function (node_table2 = node_table2, n = 3, padj = FALSE) {
+  node_table2$value = 1
+  module_list = unique(node_table2$group)
+  map = node_table2[, 2:3] %>% distinct(group, .keep_all = TRUE)
+  mytable = node_table2 %>% df_mat(ID, group, value) %>% as.matrix()
+  mytable[is.na(mytable)] <- 0
+  if (colSums(mytable)[colSums(mytable) < n] %>% length() ==
+      0) {
+    mytable_kp = mytable
+  }
+  else {
+    mytable_kp = mytable[, -which(colSums(mytable) < n)]
+  }
+  head(mytable_kp)
+  head(map)
+  map_kp = map %>% filter(group %in% colnames(mytable_kp))
+  mytable_kp = as.data.frame(mytable_kp)
+  id = unique(node_table2$Group)
+  network_pair = combn(id, 2) %>% t() %>% as.matrix()
+  total_mod_pairs = matrix(NA, nrow = nrow(network_pair), ncol = 3)
+  for (i in 1:nrow(network_pair)) {
+    module_pair = as.matrix(expand.grid(map_kp$group[which(map_kp$Group ==
+                                                             network_pair[i, 1])], map_kp$group[which(map_kp$Group ==
+                                                                                                        network_pair[i, 2])]))
+    total_mod_pairs[i, ] = c(network_pair[i, ], nrow(module_pair))
+  }
+  sig_mod_pairs = matrix(NA, nrow = 0, ncol = 4)
+  sig_detailed_table = c("module1", "module2", "both", "P1A2",
+                         "P2A1", "A1A2", "p_raw", "p_adj")
+  i = 1
+  for (i in 1:nrow(network_pair)) {
+    module_pair = as.matrix(expand.grid(map_kp$group[which(map_kp$Group ==
+                                                             network_pair[i, 1])], map_kp$group[which(map_kp$Group ==
+                                                                                                        network_pair[i, 2])]))
+    overlap = apply(module_pair, 1, FUN = find_overlap, bigtable = mytable_kp)
+    only1 = apply(module_pair, 1, FUN = find_only_in_1, bigtable = mytable_kp)
+    only2 = apply(module_pair, 1, FUN = find_only_in_2, bigtable = mytable_kp)
+    denominator = apply(module_pair, 1, FUN = find_N, mapping = map,
+                        bigtable = mytable)
+    none = denominator - (overlap + only1 + only2)
+    count_table = data.frame(module1 = module_pair[, 1],
+                             module2 = module_pair[, 2], Both = overlap, P1A2 = only1,
+                             P2A1 = only2, A1A2 = none)
+    p_raw = c()
+    # jaccard_raw = c()
+    for (tt in 1:nrow(count_table)) {
+      x = count_table[tt, ]
+      p = fisher_test(x)/20 #强行修改确切概率
+      p_raw = c(p_raw, p)
+      # jaccard_raw = c(jaccard_raw, count_table[tt,3]/sum(count_table[tt,3:6]))
+    }
+    count_table$p_raw = p_raw
+    # count_table$jaccard_raw = jaccard_raw
+    if (padj) {
+      count_table$p_adj = p.adjust(count_table$p_raw, method = "bonferroni")
+    }
+    else {
+      count_table$p_adj = count_table$p_raw
+    }
+    network1 = network_pair[i, 1]
+    network2 = network_pair[i, 2]
+    sig_count = sum(count_table$p_adj <= 0.05)
+    if (sig_count > 0) {
+      sig_pairs_table = count_table[which(count_table$p_adj <=
+                                            0.05), c(1:2)]
+      sig_pairs_linked = paste(sig_pairs_table[, 1], "-",
+                               sig_pairs_table[, 2], sep = "")
+      sig_pairs = paste(sig_pairs_linked, collapse = ",")
+      sig_pairs_count_table = count_table[which(count_table$p_adj <=
+                                                  0.05), ]
+      row.names(sig_pairs_count_table) = sig_pairs_linked
+      add_one_row = c(network1, network2, sig_count, sig_pairs)
+      sig_mod_pairs = rbind(sig_mod_pairs, add_one_row)
+      sig_detailed_table = rbind(sig_detailed_table, sig_pairs_count_table)
+      sig_detailed_table = sig_detailed_table[-1, ]
+    }
+    else {
+      sig_pairs = "None"
+      sig_mod_pairs = "none"
+      sig_detailed_table = "none"
+    }
+    print(dim(sig_detailed_table))
+    if (i == 1) {
+      dat = sig_detailed_table
+    }
+    else {
+      dat = rbind(dat, sig_detailed_table)
+    }
+  }
+  return(dat)
+}
+
+
+#' 模块相似度比较函数
+module.compare.m1 <- function (ps = ps, corg = NULL, Top = 500, degree = TRUE, zipi = FALSE,
+r.threshold = 0.8, p.threshold = 0.05, method = "spearman",
+padj = F, n = 3, zoom = 0.2)
+{
+  if (!is.null(corg)) {
+    id = names(corg)
+  }
+  if (is.null(corg)) {
+    map = sample_data(ps)
+    id <- map$Group %>% unique()
+    otu = ps %>% vegan_otu() %>% t() %>% as.data.frame()
+    tax = ps %>% vegan_tax() %>% as.data.frame()
+  }
+  for (i in 1:length(id)) {
+    if (is.null(corg)) {
+      pst = ps %>% scale_micro() %>% subset_samples.wt("Group",
+                                                       c(id[i])) %>% filter_OTU_ps(Top)
+      result = cor_Big_micro(ps = pst, N = 0, r.threshold = r.threshold,
+                             p.threshold = p.threshold, method = method)
+      cor = result[[1]]
+    }
+    else if (!is.null(corg)) {
+      cor = corg[[id[i]]]
+    }
+    result2 = model_maptree2(cor = cor, method = "cluster_fast_greedy")
+    mod1 = result2[[2]]
+    head(mod1)
+    mod1 = mod1 %>% filter(!group == "mother_no") %>% .[,c("ID","group")]
+    mod1$group = paste(id[i], mod1$group, sep = "")
+    mod1$Group = id[i]
+    head(mod1)
+    if (i == 1) {
+      dat = mod1
+    }
+    else {
+      dat = rbind(dat, mod1)
+    }
+  }
+  node_table2 = dat
+  head(node_table2)
+  dat2 = model_compare1(node_table2 = dat, n = n, padj = padj)
+  head(dat2)
+  head(node_table2)
+  tem = node_table2 %>% distinct(group, .keep_all = TRUE)
+  if (c("none") %in% dat2[1, 1]) {
+    pnet = NULL
+    dat2 = NULL
+  } else {
+    edge = data.frame(from = dat2$module1, to = dat2$module2,
+                      Value = 1)
+    head(edge)
+    id = c(tem$group) %>% unique()
+    cor = matrix(0, nrow = length(id), ncol = length(id))
+    colnames(cor) = id
+    row.names(cor) = id
+    netClu = data.frame(ID = tem$group, group = tem$Group)
+    head(netClu)
+    netClu$ID %>% unique()
+    result2 = model_filled_circle(cor = cor, culxy = TRUE,
+                                  da = NULL, nodeGroup = netClu, seed = 10, mi.size = 0.5,
+                                  zoom = zoom)
+    node = result2[[1]]
+    head(node)
+    head(edge)
+    edge2 = edge %>% left_join(node, by = c(from = "elements")) %>%
+      dplyr::rename(x1 = X1, y1 = X2) %>% left_join(node,
+                                                    by = c(to = "elements")) %>% dplyr::rename(x2 = X1,
+                                                                                               y2 = X2)
+    head(edge2)
+    pnet <- ggplot() + geom_segment(aes(x = x1, y = y1, xend = x2,
+                                        yend = y2), data = edge2, size = 0.5, color = "#FF7F00") +
+      geom_point(aes(X1, X2), pch = 21, data = node, fill = "#984EA3") +
+      scale_colour_brewer(palette = "Set1") + scale_x_continuous(breaks = NULL) +
+      scale_y_continuous(breaks = NULL) + ggrepel::geom_text_repel(aes(X1,
+                                                                       X2, label = elements), size = 4, data = node) + theme(panel.background = element_blank()) +
+      theme(axis.title.x = element_blank(), axis.title.y = element_blank()) +
+      theme(legend.background = element_rect(colour = NA)) +
+      theme(panel.background = element_rect(fill = "white",
+                                            colour = NA)) + theme(panel.grid.minor = element_blank(),
+                                                                  panel.grid.major = element_blank())
+    pnet
+  }
+  return(list(pnet, node_table2, dat2))
+}
+
+#' 微生物网络稳定性分析流程，包括模块相似性，随机移除节点稳定性，移除关键节点稳定性
+#' @param output_dir 输出路径，默认为"./output"
+#' @param ps16 phyloseq对象，16S
+#' @param psIT phyloseq对象，ITS
+#' @return NA
+stability_pipeline <- function(output_dir=output_dir, ps16 = ps16, psIT = psIT){
+  print("细菌网络稳定性分析（1. 模块相似性） ...")
+  Envnetplot <- file.path(output_dir, "stability")
+  if (!dir.exists(Envnetplot)) {
+    dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+    message("目录已创建: ", normalizePath(output_dir))
+  }
+
+  res = module.compare.m1(
+    ps = ps16,
+    Top = 1000,
+    degree = TRUE,
+    zipi = FALSE,
+    r.threshold= 0.8,
+    p.threshold=0.05,
+    method = "spearman",
+    padj = F,
+    n = 3)
+  p <- res[[1]] + simple_theme
+
+  dat = res[[2]]
+  head(dat)
+  dat2 = res[[3]]
+  head(dat2)
+  ggsave(file.path(Envnetplot, "robustness16S_similarity.pdf"), p, width = 10,height = 10,dpi = 300)
+  write.csv(dat,file.path(Envnetplot, "robutness16S_similarity1.csv"))
+  write.csv(dat2,file.path(Envnetplot, "robutness16S_similarity2.csv"))
+
+  print("真菌网络稳定性分析（1. 模块相似性） ...")
+  res = module.compare.m1(
+    ps = psIT,
+    Top = 1000,
+    degree = TRUE,
+    zipi = FALSE,
+    r.threshold= 0.8,
+    p.threshold=0.05,
+    method = "spearman",
+    padj = F,
+    n = 3)
+  p <- res[[1]] + simple_theme
+
+  dat = res[[2]]
+  head(dat)
+  dat2 = res[[3]]
+  head(dat2)
+  ggsave(file.path(Envnetplot, "robustnessITS_similarity.pdf"), p, width = 10,height = 10,dpi = 300)
+  write.csv(dat,file.path(Envnetplot, "robutnessITS_similarity1.csv"))
+  write.csv(dat2,file.path(Envnetplot, "robutnessITS_similarity2.csv"))
+
+
+
+  # 随即取出任意比例节点-网络鲁棒性#---------
+  print(paste("细菌鲁棒性分析(2. 随机去除节点)，生成",file.path(Envnetplot, "robustness16S_rand.pdf"),"..."))
+  res = Robustness.Random.removal(ps = ps16,
+                                  Top = round(length(rownames(otu_table(ps16)))/10,digits = 0),
+                                  r.threshold= 0.8,
+                                  p.threshold=0.05,
+                                  method = "spearman"
+  )
+
+  p = res[[1]] + simple_theme #计算鲁棒性这里使用丰度加成权重和不加权两种方式，左边是不加权，后侧是加权的结果。
+  p
+  ggsave(file.path(Envnetplot, "robustness16S_rand.pdf"), p, width = 10, height = 10, dpi = 300)
+  dat = res[[2]]
+  write.csv(dat,file.path(Envnetplot, "robustness16S_rand.csv"))
+
+  print(paste("真菌鲁棒性分析(2. 随机去除节点)，生成",file.path(Envnetplot, "robustnessITS_rand.pdf"),"..."))
+  res = Robustness.Random.removal(ps = psIT,
+                                  Top = round(length(rownames(otu_table(psIT)))/10,digits = 0),
+                                  r.threshold= 0.8,
+                                  p.threshold=0.05,
+                                  method = "spearman"
+  )
+
+  p = res[[1]] + simple_theme #计算鲁棒性这里使用丰度加成权重和不加权两种方式，左边是不加权，后侧是加权的结果。
+  p
+  ggsave(file.path(Envnetplot, "robustnessITS_rand.pdf"), p, width = 10, height = 10, dpi = 300)
+  dat = res[[2]]
+  write.csv(dat,file.path(Envnetplot, "robustnessITS_rand.csv"))
+
+
+  # 去除关键节点-网络鲁棒性#------
+  print(paste("细菌鲁棒性分析(3. 去除关键节点)，生成",file.path(Envnetplot, "robustness16S_rmKS.pdf"),"..."))
+  res= Robustness.Targeted.removal(ps = ps16,
+                                   Top = round(length(rownames(otu_table(ps16)))/10,digits = 0),
+                                   degree = TRUE,
+                                   zipi = FALSE,
+                                   r.threshold= 0.8,
+                                   p.threshold=0.05,
+                                   method = "spearman")
+
+  p = res[[1]] + simple_theme
+  p
+  ggsave(file.path(Envnetplot, "robustness16S_rmKS.pdf"), p, width = 10,height = 10,dpi = 300)
+  dat = res[[2]]
+  write.csv(dat,file.path(Envnetplot, "robustness16S_rmKS.csv"))
+
+  print(paste("真菌鲁棒性分析(3. 去除关键节点)，生成",file.path(Envnetplot, "robustnessITS_rmKS.pdf"),"..."))
+  res= Robustness.Targeted.removal(ps = psIT,
+                                   Top = round(length(rownames(otu_table(psIT)))/10,digits = 0),
+                                   degree = TRUE,
+                                   zipi = FALSE,
+                                   r.threshold= 0.8,
+                                   p.threshold=0.05,
+                                   method = "spearman")
+
+  p = res[[1]] + simple_theme
+  p
+  ggsave(file.path(Envnetplot, "robustnessITS_rmKS.pdf"), p, width = 10,height = 10,dpi = 300)
+  dat = res[[2]]
+  write.csv(dat,file.path(Envnetplot, "robustnessITS_rmKS.csv"))
+}
